@@ -1,4 +1,5 @@
 const express = require('express');
+const jwt = require('jsonwebtoken')
 
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
@@ -7,7 +8,7 @@ const LocalStrategy = require('passport-local').Strategy;
 const morgan = require('morgan');
 const app = express();
 const port = 3000;
-
+const jwtSecret = require('crypto').randomBytes(16) // 16*8=256 random
 app.use(morgan('dev'));
 
 app.get('/', (req, res) => {
@@ -82,9 +83,32 @@ app.use(passport.session());
 
 //CREACION DE RUTA 
 
-app.post('/login', passport.authenticate('username-password', {
-  successRedirect: '/', // Redirecciona a la ruta protegida si el inicio de sesión es exitoso
-  failureRedirect: '/login', // Redirecciona de nuevo al formulario de inicio de sesión si falla
-  failureFlash: true // Opcional, para mensajes de error
-}));
+//app.post('/login', passport.authenticate('username-password', {
+ // successRedirect: '/', // Redirecciona a la ruta protegida si el inicio de sesión es exitoso
+//  failureRedirect: '/login', // Redirecciona de nuevo al formulario de inicio de sesión si falla
+ // failureFlash: true // Opcional, para mensajes de error
+//}));
 
+app.post('/login', 
+  passport.authenticate('username-password', { failureRedirect: '/login', session: false }), // we indicate that this endpoint must pass through our 'username-password' passport strategy, which we defined before
+  (req, res) => { 
+    // This is what ends up in our JWT
+    const jwtClaims = {
+      sub: req.user.username,
+      iss: 'localhost:3000',
+      aud: 'localhost:3000',
+      exp: Math.floor(Date.now() / 1000) + 604800, // 1 week (7×24×60×60=604800s) from now
+      role: 'user' // just to show a private JWT field
+    }
+
+    // generate a signed json web token. By default the signing algorithm is HS256 (HMAC-SHA256), i.e. we will 'sign' with a symmetric secret
+    const token = jwt.sign(jwtClaims, jwtSecret)
+
+    // From now, just send the JWT directly to the browser. Later, you should send the token inside a cookie.
+    res.json(token)
+    
+    // And let us log a link to the jwt.io debugger for easy checking/verifying:
+    console.log(`Token sent. Debug at https://jwt.io/?value=${token}`)
+    console.log(`Token secret (for verifying the signature): ${jwtSecret.toString('base64')}`)
+  }
+)
