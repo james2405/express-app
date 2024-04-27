@@ -1,18 +1,28 @@
 const express = require('express');
 const jwt = require('jsonwebtoken')
+const path = require('path');
 
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
-
+const cookieParser = require('cookie-parser')
 
 const morgan = require('morgan');
 const app = express();
 const port = 3000;
 const jwtSecret = require('crypto').randomBytes(16) // 16*8=256 random
+//console.log(`Clave secreta JWT actual: ${jwtSecret}`);
+
 app.use(morgan('dev'));
 
-app.get('/', (req, res) => {
+app.use(express.static('public'));
+
+/*app.get('/', (req, res) => {
   res.send('Hola Mundo');
+});*/
+
+// Ruta para el login
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
 app.listen(port, () => {
@@ -103,7 +113,6 @@ app.post('/login',
 
     // generate a signed json web token. By default the signing algorithm is HS256 (HMAC-SHA256), i.e. we will 'sign' with a symmetric secret
     const token = jwt.sign(jwtClaims, jwtSecret)
-
     // From now, just send the JWT directly to the browser. Later, you should send the token inside a cookie.
     res.json(token)
     
