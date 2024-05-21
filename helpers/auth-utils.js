@@ -1,21 +1,22 @@
-const scrypt = require('scrypt-pbkdf');
+const scryptPbkdf = require('scrypt-pbkdf');
 const base64 = require('base64-arraybuffer');
+const { TextEncoder } = require('util');
 
-// Parámetros de scrypt
-const fastParams = { N: 16384, r: 8, p: 1 };
-const secureParams = { N: 65536, r: 8, p: 2 };
+const derivedKeyLength = 64;
+const fastParams = { N: 1 << 15, r: 8, p: 1 };
+const slowParams = { N: 1 << 20, r: 8, p: 1 };
 
-// Generar sal
-const generateSalt = () => base64.encode(scrypt.salt(16)); // Usamos 16 bytes para la sal
+async function deriveKey(password, salt, params) {
+    const encoder = new TextEncoder();
+    const passwordArray = encoder.encode(password);
+    const saltArray = base64.decode(salt);
+    const derivedKey = await scryptPbkdf.scrypt(passwordArray, saltArray, derivedKeyLength, params);
+    return base64.encode(derivedKey);
+}
 
-// Derivar clave
-const deriveKey = async (password, salt, params) => {
-  const passwordArray = new TextEncoder().encode(password);
-  const saltArray = base64.decode(salt);
-  console.log('Password Array:', passwordArray);
-  console.log('Salt Array:', saltArray);
-  const hash = await scrypt.scrypt(passwordArray, saltArray, 32, params); // Derivar 32 bytes de clave
-  return base64.encode(hash);
-};
+function generateSalt() {
+    return base64.encode(scryptPbkdf.salt(16));
+}
 
-module.exports = { generateSalt, deriveKey, fastParams, secureParams };
+module.exports = { deriveKey, generateSalt, fastParams, slowParams };
+

@@ -11,16 +11,22 @@ const ExtractJwt = require('passport-jwt').ExtractJwt;
 require('dotenv').config();
 const morgan = require('morgan');
 const sqlite3 = require('better-sqlite3');
-const { deriveKey, generateSalt, fastParams, secureParams } = require('./helpers/auth-utils');
+const { deriveKey, generateSalt, fastParams } = require('./helpers/auth-utils');
 
 const app = express();
-const port = process.env.SERVER_PORT || 3010;
+const port = process.env.SERVER_PORT || 3000;
 const jwtSecret = require('crypto').randomBytes(16);
 
 // Middleware
+const loggerMiddleware = (req, res, next) => {
+  console.log(`${req.method} ${req.path}`);
+  next();
+};
+
 app.use(morgan('dev'));
 app.use(express.static('public'));
 app.use(cookieParser());
+app.use(loggerMiddleware);
 app.use(flash());
 
 app.use(session({
@@ -43,14 +49,10 @@ passport.use('signup-username-password', new LocalStrategy(
     if (userExists) {
       return done(null, false, { message: 'User already exists' });
     }
-
+    
     const salt = generateSalt();
-    console.log('Sal generada durante el registro:', salt);
-    console.time('Derivación de clave (lenta)');
-    const hash = await deriveKey(password, salt, secureParams); // Usando configuración lenta para registro
-    console.timeEnd('Derivación de clave (lenta)');
-    console.log('Hash generado durante el registro:', hash);
-
+    const hash = await deriveKey(password, salt, fastParams);
+    
     try {
       db.prepare('INSERT INTO credentials (username, password, salt) VALUES (?, ?, ?)').run(username, hash, salt);
       return done(null, { username });
@@ -66,21 +68,12 @@ passport.use('login-username-password', new LocalStrategy(
     if (!user) {
       return done(null, false, { message: 'Incorrect username or password' });
     }
-
-    console.log('Sal almacenada para el usuario:', user.salt);
-    console.time('Derivación de clave (rápida)');
-    const hash = await deriveKey(password, user.salt, fastParams); // Usando configuración rápida para inicio de sesión
-    console.timeEnd('Derivación de clave (rápida)');
-    console.log('Hash almacenado:', user.password);
-    console.log('Hash derivado:', hash);
-
+    
+    const hash = await deriveKey(password, user.salt, fastParams);
     if (user.password !== hash) {
-      console.log('Hashes no coinciden:');
-      console.log('Hash almacenado:', user.password);
-      console.log('Hash derivado:', hash);
       return done(null, false, { message: 'Incorrect username or password' });
     }
-
+    
     return done(null, { username });
   }
 ));
@@ -93,6 +86,16 @@ passport.use('jwtCookie', new JwtStrategy({
   if (!user) return done(null, false);
   return done(null, { username: jwtPayload.sub });
 }));
+
+// // Elimina la serialización del usuario
+// passport.serializeUser((user, done) => {
+//   done(null, user.username);
+// });
+
+// passport.deserializeUser((username, done) => {
+//   const user = db.prepare('SELECT * FROM credentials WHERE username = ?').get(username);
+//   done(null, user);
+// });
 
 // Rutas
 app.get('/', passport.authenticate('jwtCookie', { session: false, failureRedirect: '/login' }), (req, res) => {
@@ -145,6 +148,7 @@ app.post('/signup', passport.authenticate('signup-username-password', { session:
   const token = jwt.sign({ sub: req.user.username }, jwtSecret, { expiresIn: '1h' });
   res.cookie('jwt', token, { httpOnly: true, secure: false });
   
+  // Log link to jwt.io debugger for easy checking/verifying
   console.log(`Token sent. Debug at https://jwt.io/?value=${token}`);
   console.log(`Token secret (for verifying the signature): ${jwtSecret.toString('base64')}`);
   
@@ -156,6 +160,7 @@ app.post('/login', passport.authenticate('login-username-password', { session: f
   const token = jwt.sign({ sub: req.user.username }, jwtSecret, { expiresIn: '1h' });
   res.cookie('jwt', token, { httpOnly: true, secure: false });
   
+  // Log link to jwt.io debugger for easy checking/verifying
   console.log(`Token sent. Debug at https://jwt.io/?value=${token}`);
   console.log(`Token secret (for verifying the signature): ${jwtSecret.toString('base64')}`);
   
