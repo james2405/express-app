@@ -1,1 +1,6 @@
 .env
+check-db.js
+init-db.js
+credentials.db
+node_modules
+express-app.zip

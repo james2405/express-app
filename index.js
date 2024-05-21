@@ -1,123 +1,178 @@
 const express = require('express');
-const jwt = require('jsonwebtoken')
+const jwt = require('jsonwebtoken');
 const path = require('path');
-
+const flash = require('connect-flash');
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
-const cookieParser = require('cookie-parser')
-
+const cookieParser = require('cookie-parser');
+const session = require('express-session');
+const JwtStrategy = require('passport-jwt').Strategy;
+const ExtractJwt = require('passport-jwt').ExtractJwt;
+require('dotenv').config();
 const morgan = require('morgan');
+const sqlite3 = require('better-sqlite3');
+const { deriveKey, generateSalt, fastParams, secureParams } = require('./helpers/auth-utils');
+
 const app = express();
-const port = 3000;
-const jwtSecret = require('crypto').randomBytes(16) // 16*8=256 random
-//console.log(`Clave secreta JWT actual: ${jwtSecret}`);
+const port = process.env.SERVER_PORT || 3010;
+const jwtSecret = require('crypto').randomBytes(16);
 
+// Middleware
 app.use(morgan('dev'));
-
 app.use(express.static('public'));
+app.use(cookieParser());
+app.use(flash());
 
-/*app.get('/', (req, res) => {
-  res.send('Hola Mundo');
-});*/
+app.use(session({
+  secret: 'tu secreto muy secreto',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { secure: false }
+}));
 
-// Ruta para el login
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+app.use(passport.initialize());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Configuración de Passport
+const db = new sqlite3('database/credentials.db', { fileMustExist: true });
+
+passport.use('signup-username-password', new LocalStrategy(
+  async (username, password, done) => {
+    const userExists = db.prepare('SELECT COUNT(*) AS count FROM credentials WHERE username = ?').get(username).count > 0;
+    if (userExists) {
+      return done(null, false, { message: 'User already exists' });
+    }
+
+    const salt = generateSalt();
+    console.log('Sal generada durante el registro:', salt);
+    console.time('Derivación de clave (lenta)');
+    const hash = await deriveKey(password, salt, secureParams); // Usando configuración lenta para registro
+    console.timeEnd('Derivación de clave (lenta)');
+    console.log('Hash generado durante el registro:', hash);
+
+    try {
+      db.prepare('INSERT INTO credentials (username, password, salt) VALUES (?, ?, ?)').run(username, hash, salt);
+      return done(null, { username });
+    } catch (error) {
+      return done(error);
+    }
+  }
+));
+
+passport.use('login-username-password', new LocalStrategy(
+  async (username, password, done) => {
+    const user = db.prepare('SELECT * FROM credentials WHERE username = ?').get(username);
+    if (!user) {
+      return done(null, false, { message: 'Incorrect username or password' });
+    }
+
+    console.log('Sal almacenada para el usuario:', user.salt);
+    console.time('Derivación de clave (rápida)');
+    const hash = await deriveKey(password, user.salt, fastParams); // Usando configuración rápida para inicio de sesión
+    console.timeEnd('Derivación de clave (rápida)');
+    console.log('Hash almacenado:', user.password);
+    console.log('Hash derivado:', hash);
+
+    if (user.password !== hash) {
+      console.log('Hashes no coinciden:');
+      console.log('Hash almacenado:', user.password);
+      console.log('Hash derivado:', hash);
+      return done(null, false, { message: 'Incorrect username or password' });
+    }
+
+    return done(null, { username });
+  }
+));
+
+passport.use('jwtCookie', new JwtStrategy({
+  jwtFromRequest: ExtractJwt.fromExtractors([(req) => req.cookies.jwt]),
+  secretOrKey: jwtSecret
+}, (jwtPayload, done) => {
+  const user = db.prepare('SELECT * FROM credentials WHERE username = ?').get(jwtPayload.sub);
+  if (!user) return done(null, false);
+  return done(null, { username: jwtPayload.sub });
+}));
+
+// Rutas
+app.get('/', passport.authenticate('jwtCookie', { session: false, failureRedirect: '/login' }), (req, res) => {
+  res.send(`Welcome to your private page, ${req.user.username}!`);
+});
+
+app.get('/login', (req, res) => {
+  const messages = req.flash('error');
+  res.send(`
+    <h1>Login</h1>
+    <form action="/login" method="post">
+      <div>
+        <label>Username:</label>
+        <input type="text" name="username" />
+      </div>
+      <div>
+        <label>Password:</label>
+        <input type="password" name="password" />
+      </div>
+      <div>
+        <button type="submit">Login</button>
+      </div>
+    </form>
+    ${messages.length > 0 ? `<p>${messages[0]}</p>` : ''}
+  `);
+});
+
+app.get('/signup', (req, res) => {
+  const messages = req.flash('error');
+  res.send(`
+    <h1>Signup</h1>
+    <form action="/signup" method="post">
+      <div>
+        <label>Username:</label>
+        <input type="text" name="username" />
+      </div>
+      <div>
+        <label>Password:</label>
+        <input type="password" name="password" />
+      </div>
+      <div>
+        <button type="submit">Signup</button>
+      </div>
+    </form>
+    ${messages.length > 0 ? `<p>${messages[0]}</p>` : ''}
+  `);
+});
+
+app.post('/signup', passport.authenticate('signup-username-password', { session: false, failureRedirect: '/signup', failureFlash: true }), (req, res) => {
+  const token = jwt.sign({ sub: req.user.username }, jwtSecret, { expiresIn: '1h' });
+  res.cookie('jwt', token, { httpOnly: true, secure: false });
+  
+  console.log(`Token sent. Debug at https://jwt.io/?value=${token}`);
+  console.log(`Token secret (for verifying the signature): ${jwtSecret.toString('base64')}`);
+  
+  console.log('User registered successfully');
+  res.redirect('/');
+});
+
+app.post('/login', passport.authenticate('login-username-password', { session: false, failureRedirect: '/login', failureFlash: true }), (req, res) => {
+  const token = jwt.sign({ sub: req.user.username }, jwtSecret, { expiresIn: '1h' });
+  res.cookie('jwt', token, { httpOnly: true, secure: false });
+  
+  console.log(`Token sent. Debug at https://jwt.io/?value=${token}`);
+  console.log(`Token secret (for verifying the signature): ${jwtSecret.toString('base64')}`);
+  
+  console.log('User logged in successfully');
+  res.redirect('/');
+});
+
+app.get('/logout', (req, res) => {
+  res.cookie('jwt', '', { expires: new Date(0) });
+  res.redirect('/login');
+});
+
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).send('¡Algo salió mal!');
 });
 
 app.listen(port, () => {
   console.log(`Aplicación de ejemplo escuchando en http://localhost:${port}`);
 });
-
-app.get('/user', (req, res) => {
-  const user = {
-    name: 'alanis',
-    description: 'examen'
-  }
-  res.json(user)
-})
-
-const loggerMiddleware = (req, res, next) => {
-    console.log(`${req.method} ${req.path}`);
-    next(); // Llama al siguiente middleware o ruta
-};
-
-app.use(loggerMiddleware);
-
-app.use(express.static('public')); // para servir archivos estáticos desde la carpeta 'public'
-
-app.use(express.json()); // para analizar cuerpos de solicitud JSON
-app.use(express.urlencoded({ extended: true })); // para analizar cuerpos de solicitud con codificación URL
-
-app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).send('¡Algo salió mal!');
-});
-
-
-app.get('/', (req, res) => {
-  res.send('Welcome to your private page, user!')
-})
-
-
-passport.use('username-password', new LocalStrategy(
-  function(username, password, done) {
-    // Aquí es donde verificarías contra tu base de datos, en este ejemplo, usamos datos codificados
-    const user = { username: 'alanis', password: 'alanis' }; // No hagas esto en producción
-    
-    if (username === user.username && password === user.password) {
-      return done(null, user);
-    } else {
-      return done(null, false, { message: 'Nombre de usuario o contraseña incorrectos' });
-    }
-  }
-));
-
-//SERIALIZACION
-
-passport.serializeUser(function(user, done) {
-  done(null, user.username);
-});
-
-passport.deserializeUser(function(username, done) {
-  // En un caso real, aquí buscarías al usuario en tu base de datos
-  const user = { username: 'walrus', password: 'walrus' }; // No hagas esto en producción
-  done(null, user);
-});
-
-//INTEGRACION CON EXPRESS
-
-app.use(require('express-session')({ secret: 'un secreto muy secreto', resave: false, saveUninitialized: false }));
-app.use(passport.initialize());
-app.use(passport.session());
-
-//CREACION DE RUTA 
-
-//app.post('/login', passport.authenticate('username-password', {
- // successRedirect: '/', // Redirecciona a la ruta protegida si el inicio de sesión es exitoso
-//  failureRedirect: '/login', // Redirecciona de nuevo al formulario de inicio de sesión si falla
- // failureFlash: true // Opcional, para mensajes de error
-//}));
-
-app.post('/login', 
-  passport.authenticate('username-password', { failureRedirect: '/login', session: false }), // we indicate that this endpoint must pass through our 'username-password' passport strategy, which we defined before
-  (req, res) => { 
-    // This is what ends up in our JWT
-    const jwtClaims = {
-      sub: req.user.username,
-      iss: 'localhost:3000',
-      aud: 'localhost:3000',
-      exp: Math.floor(Date.now() / 1000) + 604800, // 1 week (7×24×60×60=604800s) from now
-      role: 'user' // just to show a private JWT field
-    }
-
-    // generate a signed json web token. By default the signing algorithm is HS256 (HMAC-SHA256), i.e. we will 'sign' with a symmetric secret
-    const token = jwt.sign(jwtClaims, jwtSecret)
-    // From now, just send the JWT directly to the browser. Later, you should send the token inside a cookie.
-    res.json(token)
-    
-    // And let us log a link to the jwt.io debugger for easy checking/verifying:
-    console.log(`Token sent. Debug at https://jwt.io/?value=${token}`)
-    console.log(`Token secret (for verifying the signature): ${jwtSecret.toString('base64')}`)
-  }
-)
